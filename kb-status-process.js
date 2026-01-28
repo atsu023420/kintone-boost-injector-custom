@@ -7,6 +7,7 @@
       const record   = event.record;
       const appId    = event.appId;
       const recordId = event.recordId;
+      console.log(record);
 
       // 条件1：現在ステータスが「評価入力中」
       const currentStatus = record['ステータス']?.value;
