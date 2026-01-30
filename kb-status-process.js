@@ -1,110 +1,160 @@
-kb.event.on('kb.edit.submit.success', (event) => {
-  try {
-    // 0) イベント到達ログ（最初に出るかを確認）
-    console.group('[Injector] kb.edit.submit.success');
-    console.time('[Injector] total'); // 全体計測
+/* ----------------------------------------------------------
+ * Boost! Injector 送信完了フック（ログ強化版 / JSONP呼び出し対応）
+ * 1) スクリプト読み込み確認
+ * 2) kb.event の存在待ち
+ * 3) 全イベントの型名をログ（ワイルドカード）
+ * 4) kb.edit.submit.success で JSONP 呼び出し
+ * ---------------------------------------------------------- */
 
-    // 1) イベント内容の最小限を可視化
-    console.log('[Injector] event.type:', event && event.type);
-    console.log('[Injector] has record? ->', !!(event && event.record));
+(() => {
+  const TAG = '[Injector]';
+  console.group(`${TAG} custom JS loaded`);
+  console.time(`${TAG} total`);
+  console.log(`${TAG} script started at`, new Date().toISOString());
 
-    const rec = event.record;
+  // ---- 0) グローバル動作チェック（最低限の読込確認） ----
+  // ここまでのログが出なければ、JSファイルが読み込まれていません（URL/公開設定/キャッシュを確認）
+  console.log(`${TAG} window.location.href:`, window.location && window.location.href);
+
+  // ---- 1) kb.event が使えるまで待つ（最大 ~10秒）----
+  const MAX_WAIT = 50; // 50*200ms = 10s
+  let waitCount = 0;
+
+  function waitKb() {
+    const ok = !!(window.kb && kb.event && kb.event.on);
+    console.log(`${TAG} kb.event ready?`, ok, `(try ${waitCount + 1}/${MAX_WAIT})`);
+    if (ok) {
+      onKbReady();
+    } else if (waitCount++ < MAX_WAIT) {
+      setTimeout(waitKb, 200);
+    } else {
+      console.warn(`${TAG} kb.event not available after waiting. Injectorの画面/設定を再確認してください。`);
+      console.timeEnd(`${TAG} total`);
+      console.groupEnd();
+    }
+  }
+
+  // ---- 2) kb が準備できたらハンドラを登録 ----
+  function onKbReady() {
+    console.log(`${TAG} kb.event is available:`, !!kb.event.on);
+
+    // 2-1) まずは全イベントの型名を覗く（一度限り）
+    try {
+      kb.event.on('*', (ev) => {
+        try {
+          console.log(`${TAG} ANY event:`, ev && ev.type);
+        } catch (_) {}
+        return ev;
+      });
+      console.log(`${TAG} wildcard event logger attached`);
+    } catch (e) {
+      console.warn(`${TAG} wildcard attach failed:`, e);
+    }
+
+    // 2-2) 本命：保存完了イベントにフック
+    try {
+      kb.event.on('kb.edit.submit.success', onSubmitSuccess);
+      console.log(`${TAG} handler attached: kb.edit.submit.success`);
+    } catch (e) {
+      console.error(`${TAG} attach failed: kb.edit.submit.success`, e);
+    }
+
+    // 2-3) 手動キック関数（コンソールで window._kick() で実行可）
+    window._kick = () => {
+      console.warn(`${TAG} manual kick`);
+      onSubmitSuccess({ type: 'manual.kick', record: window._lastRecord || null });
+    };
+
+    console.timeEnd(`${TAG} total`);
+    console.groupEnd();
+  }
+
+  // ---- 3) 送信完了ハンドラ（ここで JSONP 実行） ----
+  function onSubmitSuccess(event) {
+    console.group(`${TAG} onSubmitSuccess`);
+    const rec = event && event.record;
     if (!rec) {
-      console.warn('[Injector] event.record がありません。Boost! Injector のコールバックが想定外の可能性');
+      console.warn(`${TAG} event.record が未定義。直前のANYイベントログに型名が出ているか確認してください。event=`, event);
       console.groupEnd();
       return event;
     }
 
-    // 2) レコードIDと送信種別の確認
+    // 3-1) レコードID／送信種別
     const recordId = rec.$id && rec.$id.value;
     const sendType = rec['送信種別'] && rec['送信種別'].value;
-    console.log('[Injector] recordId:', recordId);
-    console.log('[Injector] 送信種別:', sendType);
+    window._lastRecord = rec; // 手動キック用に保持
+    console.log(`${TAG} event.type:`, event.type);
+    console.log(`${TAG} recordId:`, recordId);
+    console.log(`${TAG} 送信種別:`, sendType);
 
-    // 3) 条件分岐（提出以外は何もしない）
+    // 条件：提出のみ
     if (sendType !== '提出') {
-      console.log('[Injector] 送信種別が提出以外のため送信しません。');
-      console.timeEnd('[Injector] total');
+      console.log(`${TAG} 送信種別が提出以外のため処理スキップ`);
       console.groupEnd();
       return event;
     }
     if (!recordId) {
-      console.error('[Injector] recordId が空。event.record.$id.value の取得を見直してください。');
-      console.timeEnd('[Injector] total');
+      console.error(`${TAG} recordId が取得できません（rec.$id.value を確認）`);
       console.groupEnd();
       return event;
     }
 
-    // 4) （必要な場合のみ）次作業者のログイン名を取得
+    // 3-2) 次作業者ログイン名（必要な場合のみ）
     const assigneeLogin = (rec['レコード管理者']?.value || [])[0]?.code || '';
-    console.log('[Injector] assigneeLogin:', assigneeLogin || '(empty)');
+    console.log(`${TAG} assigneeLogin:`, assigneeLogin || '(empty)');
 
-    // 5) JSONP コールバック（グローバルに定義）
+    // 3-3) JSONP コールバック
     window._kbStatusDone = function (resp) {
-      console.group('[Injector] _kbStatusDone callback');
-      console.log('resp:', resp); // { ok: true/false, status, kintone: {...} } が返る想定
+      console.group(`${TAG} _kbStatusDone`);
+      console.log('resp:', resp);
       if (resp && resp.ok === true) {
-        console.info('[Injector] ステータス更新 OK');
+        console.info(`${TAG} ステータス更新 OK`);
       } else {
-        console.warn('[Injector] ステータス更新 NG', resp);
+        console.warn(`${TAG} ステータス更新 NG`, resp);
       }
       console.groupEnd();
-      console.timeEnd('[Injector] total');
     };
 
-    // 6) GAS エンドポイント設定
+    // 3-4) GAS JSONP 呼び出し（CORS非対象）
     const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbyawDi5C71L52W370elaTBYY4RuS-oh4kta9fhGOwhjsHtsnIe3kHeJIu3d3JdVsvZA6w/exec';
-
-    // 7) JSONP のクエリ生成（cache-busting 付き）
     const qs = new URLSearchParams({
       id: String(recordId),
       assignee: assigneeLogin || '',
-      // 必要なら app/action の上書きも可能：
+      // 必要に応じて上書き可能：
       // app: '937',
       // action: '評価入力完了',
       callback: '_kbStatusDone',
-      c: Date.now().toString() // キャッシュ回避
+      c: Date.now().toString() // キャッシュ防止
     });
     const src = `${GAS_ENDPOINT}?${qs.toString()}`;
-    console.log('[Injector] JSONP src:', src);
+    console.log(`${TAG} JSONP src:`, src);
 
-    // 8) script タグ挿入（onload / onerror フック付き）
+    // 3-5) script タグ挿入（ロード結果もログ）
     const s = document.createElement('script');
     s.src = src;
-    s.defer = true; // 任意
-
-    s.onload = function () {
-      console.log('[Injector] script onload fired（JSONPロード完了）。_kbStatusDone が呼ばれていない場合はGAS側でcallbackが欠落している可能性あり。');
+    s.defer = true;
+    s.onload = () => {
+      console.log(`${TAG} JSONP script onload`);
     };
-    s.onerror = function (ev) {
-      console.error('[Injector] script onerror fired: JSONP ロード失敗（CSP/ネットワーク/URL誤りの可能性）', ev);
-      console.timeEnd('[Injector] total');
+    s.onerror = (ev) => {
+      console.error(`${TAG} JSONP script onerror`, ev);
     };
 
-    // 9) CSP によるブロック兆候を検出（エラー監視）
-    // ※ 一部ブラウザでは console にCSPメッセージが出ないことがあるため保険として
+    // CSPブロック検知（参考）
     window.addEventListener('error', function (e) {
-      if (String(e.message || '').includes('Refused to load the script')) {
-        console.error('[Injector] CSPでscriptロードが拒否されています。JSONP方式不可 → no-cors または同オリジン中継に切替が必要');
+      const msg = String(e && e.message || '');
+      if (msg.includes('Refused to load the script')) {
+        console.error(`${TAG} CSPでJSONPが拒否されています。no-cors投げっぱなし or 同オリジン中継をご検討ください。`);
       }
     }, { once: true });
 
-    // 10) 挿入して実行
     document.head.appendChild(s);
-    console.log('[Injector] script appended');
-
-    // 11) 応答が来ない場合のタイムアウト検出（10秒）
-    setTimeout(() => {
-      console.warn('[Injector] JSONP 応答タイムアウト（10秒）。GAS到達/デプロイ/URL/アクセス権を確認してください。');
-      console.timeEnd('[Injector] total');
-    }, 10000);
+    console.log(`${TAG} JSONP script appended`);
 
     console.groupEnd();
     return event;
-
-  } catch (err) {
-    console.error('[Injector] 例外発生:', err);
-    console.groupEnd && console.groupEnd();
-    return event;
   }
-});
+
+  // ---- 起動 ----
+  waitKb();
+})();
