@@ -1,54 +1,67 @@
-<script>
-/**
- * Boost! Injector 送信後（保存完了後）に、
- * 「送信種別=提出」ならプロセス管理のアクション「評価入力完了」を実行して
- * ステータスを「評価確認中」へ進める。
- *
- * 依存：kintone REST API（CORS許可。APIトークン利用）
- * 参照：/k/v1/record.json（GET）, /k/v1/record/status.json（PUT）
- * Docs: https://cybozu.dev/ja/kintone/docs/rest-api/records/update-status/
- */
+(() => {
+  'use strict';
 
-(async () => {
-  // ====== 設定（必ず置換） ======
-  const SUBDOMAIN = 'd8d1j';        // 例: 'example' → https://example.cybozu.com
+  /*** ===== 設定（必ず置換） ===== ***/
+  const SUBDOMAIN = 'YOUR_SUBDOMAIN'; // 例: https://example.cybozu.com
   const APP_ID = 937;
-  const API_TOKEN = 'yikDqoBrziDzoYM7ioTlzZvQdjMSpDouMj8idcoN';              // アプリ937のAPIトークン（閲覧/編集/プロセス実行が通る権限）
-  const ACTION_NAME = '評価入力完了';         // UI上のアクション名と完全一致（言語も一致）
-  const SENDTYPE_FIELD = '送信種別';         // フィールドコード
+  const API_TOKEN = '***************'; // App937 用APIトークン（閲覧/編集/プロセス実行が通る権限）
+  const ACTION_NAME = '評価入力完了';   // プロセス管理のアクション名（UI表記と完全一致）
+  const SENDTYPE_FIELD = '送信種別';    // フィールドコード
   const USER_FIELD_CODE_FOR_OWNER = 'レコード管理者'; // 次作業者に使うユーザー選択フィールド（必要時）
 
-  // ====== Injectorの「保存完了」をトリガーにするためのフック ======
-  // ※ Injector固有のイベント仕様が環境で異なる場合があるため、
-  //   実運用では「保存完了後にこの関数を呼ぶ」形で組み込んでください。
-  //   ここでは、ページロード後すぐに直近レコードを処理する例示に留めます。
-  //   → 実際は Boost! Submit の「保存後リダイレクト先」にこのJSを置く方式も安定です。
+  /**
+   * Injectorの「保存完了」イベントで発火
+   * - event には直近保存レコードの情報（recordId 等）が入る想定
+   * - 実際のプロパティ名は環境により異なることがあるため、console.log(event)で確認しつつ参照先を調整
+   */
+  kb.event.on('kb.edit.submit.success', async (event) => {
+    try {
+      // 1) 直近保存されたレコードIDの取得
+      //   例: event.recordId / event.id / event.detail.recordId など。環境に合わせて調整する。
+      console.log(event);
+      const recordId =
+        event?.recordId ??
+        event?.id ??
+        event?.detail?.recordId ??
+        null;
 
-  // 直近保存したレコードIDを何らかの方法で取得する必要があります。
-  // 例）Thank youページのURLパラメータ ?rid=xxxx で渡す運用にしている前提：
-  const rid = new URL(location.href).searchParams.get('rid');
-  if (!rid) return; // ridが無い場合は何もしない（運用に合わせて変更）
+      if (!recordId) {
+        console.warn('保存後イベントに recordId が見当たりません。event を確認してください。', event);
+        return event;
+      }
 
-  // レコード取得（送信種別の判定＆必要なら次作業者の抽出）
-  const record = await getRecord(APP_ID, rid);
-  const sendType = record[SENDTYPE_FIELD]?.value;
-  if (sendType !== '提出') return; // 条件外は何もしない
+      // 2) レコードを取得して「送信種別」を判定
+      const record = await getRecord(APP_ID, recordId);
+      const sendType = record[SENDTYPE_FIELD]?.value;
+      if (sendType !== '提出') {
+        // 条件外は何もしない
+        return event;
+      }
 
-  // まず assignee なしでアクション実行を試す
-  let ok = await runAction(APP_ID, rid, ACTION_NAME, null);
-  if (!ok) {
-    // 必要ならユーザー選択フィールドから次作業者を補完して再実行
-    const userCandidates = (record[USER_FIELD_CODE_FOR_OWNER]?.value || []);
-    const assigneeLogin = userCandidates[0]?.code; // 先頭のユーザーのログイン名
-    if (assigneeLogin) {
-      ok = await runAction(APP_ID, rid, ACTION_NAME, assigneeLogin);
+      // 3) ステータス更新APIを実行
+      // まず assignee なしで試行（プロセス設定が「作業者選択不要」の場合はこれで通る）
+      let ok = await runAction(APP_ID, recordId, ACTION_NAME, null);
+
+      // 4) 必要なら次作業者（assignee）を補完して再実行
+      if (!ok) {
+        const userCandidates = (record[USER_FIELD_CODE_FOR_OWNER]?.value || []);
+        const assigneeLogin = userCandidates[0]?.code; // ログイン名
+        if (assigneeLogin) {
+          ok = await runAction(APP_ID, recordId, ACTION_NAME, assigneeLogin);
+        }
+      }
+
+      if (!ok) {
+        console.error('ステータス更新に失敗。アクション名/権限/作業者条件を確認してください。');
+      }
+    } catch (err) {
+      console.error(err);
     }
-  }
-  if (!ok) {
-    console.error('ステータス更新に失敗しました。権限/アクション名/作業者条件を再確認してください。');
-  }
+    return event;
+  });
 
-  // ====== REST 呼び出し関数群 ======
+  /*** ========== REST ユーティリティ ========== ***/
+
   async function getRecord(app, id) {
     const url = `https://${SUBDOMAIN}.cybozu.com/k/v1/record.json`;
     const resp = await fetch(url, {
@@ -59,9 +72,7 @@
       },
       body: JSON.stringify({ app, id })
     });
-    if (!resp.ok) {
-      throw new Error('レコード取得失敗');
-    }
+    if (!resp.ok) throw new Error('レコード取得失敗');
     const json = await resp.json();
     return json.record;
   }
@@ -69,7 +80,7 @@
   async function runAction(app, id, action, assignee /* nullable */) {
     const url = `https://${SUBDOMAIN}.cybozu.com/k/v1/record/status.json`;
     const body = { app, id, action };
-    if (assignee) body.assignee = assignee;
+    if (assignee) body.assignee = assignee; // 「次のユーザーから作業者を選択」などでは必須
 
     const resp = await fetch(url, {
       method: 'PUT',
@@ -82,12 +93,8 @@
 
     if (resp.ok) return true;
 
-    // デバッグ
-    try {
-      const err = await resp.json();
-      console.warn('Action API error', err);
-    } catch (_) {}
+    // デバッグログ
+    try { console.warn('Action API error', await resp.json()); } catch (_) {}
     return false;
   }
 })();
-</script>
