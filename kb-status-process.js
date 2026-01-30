@@ -13,8 +13,10 @@
   kb.event.on('kb.edit.submit.success', async (event) => {
     try {
       // 1) 直近保存レコードのIDと値を event.record から取得
-      const rec = event?.record;
-      const recordId = rec?.$id?.value; // ★ここがポイント
+      const rec = event.record;
+      console.log(rec);
+      const recordId = rec.$id.value; // ★ここがポイント
+      console.log(recordId);
       if (!recordId) {
         console.warn('recordId が取得できません。event.record.$id.value を確認してください。', event);
         return event;
