@@ -116,7 +116,7 @@
     };
 
     // 3-4) GAS JSONP 呼び出し（CORS非対象）
-    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbyawDi5C71L52W370elaTBYY4RuS-oh4kta9fhGOwhjsHtsnIe3kHeJIu3d3JdVsvZA6w/exec';
+    const GAS_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwwWx8Ah3ao20gvQPlEwjVHwKhCox2fpJDg0UwZ29UWVbiUv7-eERVDTBGt4Uq-hQewcw/exec';
     const qs = new URLSearchParams({
       id: String(recordId),
       assignee: assigneeLogin || '',
