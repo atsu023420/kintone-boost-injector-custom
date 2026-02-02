@@ -38,7 +38,7 @@
         console.warn(`${TAG} event.record is missing.`, event);
         return event;
       }
-
+      console.log(rec);
       const recordId = rec.$id && rec.$id.value;
       const sendType = rec['送信種別'] && rec['送信種別'].value;
       if (!recordId) {
